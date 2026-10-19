@@ -1,53 +1,85 @@
 import { serve } from '@hono/node-server'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import { db } from './firebase.js'
 
 const app = new Hono()
 
 type Todo = {
-  id: number
+  id: string
+  title: string
+  completed: boolean
+}
+type TodoData = {
   title: string
   completed: boolean
 }
 
-const todos: Todo[] = [
-  {
-    id: 1,
-    title: 'Honoを勉強する',
-    completed: false
-  },
-  {
-    id: 2,
-    title: 'TODO APIを作る',
-    completed: false
+function isValidTodoData(data: unknown): data is TodoData {
+  if (
+    data === null ||
+    typeof data !== 'object' ||
+    Array.isArray(data)
+  ) {
+    return false
   }
-]
+
+  if (!('title' in data) || typeof data.title !== 'string') {
+    return false
+  }
+
+  if (data.title.trim() === '') {
+    return false
+  }
+
+  if (!('completed' in data) || typeof data.completed !== 'boolean') {
+    return false
+  }
+
+  return true
+}
+
+async function parseJsonBody(c: Context) {
+  try {
+    const body = await c.req.json()
+
+    return {
+      success: true,
+      data: body
+    }
+  } catch {
+    return {
+      success: false,
+      data: null
+    }
+  }
+}
 
 app.get('/', (c) => {
   return c.text('Hello Hono!')
 })
 
-app.get('/hello', (c) => {
-  return c.text('Hello API!')
+app.get('/todos', async (c) => {
+  const snapshot = await db.collection('todos').get()
+
+  const todos: Todo[] = snapshot.docs.map((doc) => {
+  const data = doc.data()
+
+  return {
+    id: doc.id,
+    title: data.title,
+    completed: data.completed
+  }
 })
 
-app.get('/todo', (c) => {
-  return c.json({
-    id: 1,
-    title: 'Honoを勉強する',
-    completed: false
-  })
-})
-
-app.get('/todos', (c) => {
   return c.json(todos)
 })
 
-app.get('/todos/:id', (c) => {
-  const id = Number(c.req.param('id'))
+app.get('/todos/:id', async (c) => {
+  const id = c.req.param('id')
 
-  const todo = todos.find((todo) => todo.id === id)
+  const doc = await db.collection('todos').doc(id).get()
 
-  if (!todo) {
+  if (!doc.exists) {
     return c.json(
       {
         message: 'TODOが見つかりません'
@@ -56,12 +88,40 @@ app.get('/todos/:id', (c) => {
     )
   }
 
-  return c.json(todo)
+  return c.json({
+    ...doc.data(),
+    id: doc.id
+  })
 })
 
 app.post('/todos', async (c) => {
-  const body = await c.req.json()
+  const result = await parseJsonBody(c)
 
+  if (!result.success) {
+    return c.json(
+      {
+        message: '正しいJSON形式で送ってください'
+      },
+      400
+    )
+  }
+
+  const body = result.data
+  // JSONがオブジェクトか確認
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    Array.isArray(body)
+  ) {
+    return c.json(
+      {
+        message: 'JSONオブジェクトを送ってください'
+      },
+      400
+    )
+  }
+
+  // titleが文字列かチェック
   if (typeof body.title !== 'string') {
     return c.json(
       {
@@ -71,24 +131,67 @@ app.post('/todos', async (c) => {
     )
   }
 
-  const newTodo: Todo = {
-    id: todos.length + 1,
+  // titleが空文字でないかチェック
+  if (body.title.trim() === '') {
+    return c.json(
+      {
+        message: 'titleを入力してください'
+      },
+      400
+    )
+  }
+
+  // 新しいTODOを作成
+  const newTodo: TodoData = {
     title: body.title,
     completed: false
   }
 
-  todos.push(newTodo)
+  // Firestoreに保存
+  const docRef = await db.collection('todos').add(newTodo)
 
-  return c.json(newTodo, 201)
+  // 保存したTODOを返す
+  return c.json({
+    id: docRef.id,
+    ...newTodo
+  }, 201)
 })
 
 app.put('/todos/:id', async (c) => {
-  const id = Number(c.req.param('id'))
-  const body = await c.req.json()
+  const id = c.req.param('id')
 
-  const todo = todos.find((todo) => todo.id === id)
+  const result = await parseJsonBody(c)
 
-  if (!todo) {
+  if (!result.success) {
+    return c.json(
+      {
+        message: '正しいJSON形式で送ってください'
+      },
+      400
+    )
+  }
+
+  const body = result.data
+
+  // JSONがオブジェクトか確認
+  if (
+    body === null ||
+    typeof body !== 'object' ||
+    Array.isArray(body)
+  ) {
+    return c.json(
+      {
+        message: 'JSONオブジェクトを送ってください'
+      },
+      400
+    )
+  }
+
+  const docRef = db.collection('todos').doc(id)
+
+  const doc = await docRef.get()
+
+  if (!doc.exists) {
     return c.json(
       {
         message: 'TODOが見つかりません'
@@ -97,18 +200,36 @@ app.put('/todos/:id', async (c) => {
     )
   }
 
-  todo.title = body.title
-  todo.completed = body.completed
+if (!isValidTodoData(body)) {
+  return c.json(
+    {
+      message: 'TODOのデータが正しくありません'
+    },
+    400
+  )
+}
 
-  return c.json(todo)
+  const updatedTodo: TodoData = {
+    title: body.title,
+    completed: body.completed
+  }
+
+  await docRef.update(updatedTodo)
+
+  return c.json({
+    id: docRef.id,
+    ...updatedTodo
+  })
 })
 
-app.delete('/todos/:id', (c) => {
-  const id = Number(c.req.param('id'))
+app.delete('/todos/:id', async (c) => {
+  const id = c.req.param('id')
 
-  const index = todos.findIndex((todo) => todo.id === id)
+  const docRef = db.collection('todos').doc(id)
 
-  if (index === -1) {
+  const doc = await docRef.get()
+
+  if (!doc.exists) {
     return c.json(
       {
         message: 'TODOが見つかりません'
@@ -117,14 +238,20 @@ app.delete('/todos/:id', (c) => {
     )
   }
 
-  const deletedTodo = todos.splice(index, 1)[0]
+  await docRef.delete()
 
-  return c.json(deletedTodo)
+  return c.json({
+    message: 'TODOを削除しました',
+    id: id
+  })
 })
 
-serve({
-  fetch: app.fetch,
-  port: 3000
-}, (info) => {
-  console.log(`Server is running on http://localhost:${info.port}`)
-})
+serve(
+  {
+    fetch: app.fetch,
+    port: 3000
+  },
+  (info) => {
+    console.log(`Server is running on http://localhost:${info.port}`)
+  }
+)
