@@ -54,24 +54,32 @@ async function parseJsonBody(c: Context) {
   }
 }
 
-app.get('/', (c) => {
-  return c.text('Hello Hono!')
-})
-
 app.get('/todos', async (c) => {
-  const snapshot = await db.collection('todos').get()
+  try {
+    const snapshot = await db.collection('todos').get()
 
-  const todos: Todo[] = snapshot.docs.map((doc) => {
-  const data = doc.data()
+    const todos: Todo[] = snapshot.docs.map((doc) => {
+      const data = doc.data()
 
-  return {
-    id: doc.id,
-    title: data.title,
-    completed: data.completed
+      return {
+        id: doc.id,
+        title: data.title,
+        completed: data.completed
+      }
+    })
+
+    return c.json(todos)
+
+  } catch (error) {
+    console.error('Firestoreエラー:', error)
+
+    return c.json(
+      {
+        message: 'データベースでエラーが発生しました'
+      },
+      500
+    )
   }
-})
-
-  return c.json(todos)
 })
 
 app.get('/todos/:id', async (c) => {
@@ -244,6 +252,17 @@ app.delete('/todos/:id', async (c) => {
     message: 'TODOを削除しました',
     id: id
   })
+})
+
+app.onError((error, c) => {
+  console.error('サーバーエラー:', error)
+
+  return c.json(
+    {
+      message: 'サーバーでエラーが発生しました'
+    },
+    500
+  )
 })
 
 serve(
